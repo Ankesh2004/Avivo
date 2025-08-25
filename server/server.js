@@ -1,12 +1,12 @@
 import express from "express"
 import cors from "cors"
-import dotenv from "dotenv"
+import { config } from "./config/config";
 import fs from "node:fs";
 import https from 'node:https';
 import { Server } from "socket.io";
-dotenv.config();
 import path from "path";
 import { fileURLToPath } from "url";
+import { createWorkers } from "./createWorker";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -17,7 +17,7 @@ app.use(express.json());
 app.use(express.urlencoded({extended:true}));
 app.use(express.static("public"));
 
-const PORT = process.env.PORT || 4000;
+const PORT = config.port || 4000;
 
 async function startServer() {
     // starting a https server
@@ -26,14 +26,21 @@ async function startServer() {
         cert: fs.readFileSync(path.join(__dirname,'/config/create-cert.pem'))
     }
     const httpsServer = https.createServer(options,app);
-    httpsServer.listen(4000,()=>{
+    httpsServer.listen(PORT,()=>{
         console.log("Server started !");
     })
 
     // socket.io server
     const io = new Server(httpsServer,{
-        cors: "https://localhost/4000"
+        cors: `https://localhost/${PORT}`
     })
+}
+let workers = null;
+// Everything to be initialised to get SFU running
+async function initMediaSoup() {
+    workers = await createWorkers();
+
 }
 
 startServer();
+initMediaSoup();
