@@ -10,7 +10,7 @@ const initConnect = ()=>{
     connectButton.disabled = true;
     addSocketListeners();
 }
-
+// 1. Setup the device
 const deviceSetup = async()=>{
     device = new mediasoupClient.Device();
     // load the device
@@ -30,10 +30,10 @@ const deviceSetup = async()=>{
         }
     });
 }
-// Create transport
+// 2. Create transport
 const createProducer = async()=>{
     try{
-        localStream = navigator.mediaDevices.getUserMedia({
+        localStream = await navigator.mediaDevices.getUserMedia({
             audio:true,
             video:true
         })
@@ -41,12 +41,33 @@ const createProducer = async()=>{
     }catch(error){
         console.log("GUM error",error);
     }
-    await socket.emit('create-producer-transport',async (data)=>{
+    socket.emit('create-producer-transport',async (data)=>{
         console.log(data);
+        const {id,iceParameters,iceCandidates,dtlsParameters} = data;
+        const transport = device.createSendTransport({
+            id,
+            iceParameters,
+            iceCandidates,
+            dtlsParameters
+        });
+        producerTransport = transport;
     });
-    
+    producerTransport.on('connect',async ({dtlsParameters},callback,errback)=>{
+        console.log("Producer transport connected !");
+    })
+    producerTransport.on('produce',async(parameters,callback,errback)=>{
+        console.log('Transport producer event fired!');
+    })
+    createProdButton.disabled = true;
+    publishButton.disabled = true;
 };
-// All socket event listeners
+
+// 3. Publish transport feed
+const publish = async()=>{
+    console.log("Publish feed!");
+}
+
+// -----------------All socket event listeners-------------------------------
 function addSocketListeners(){
     socket.on("connect",()=>{
         connectButton.innerHTML = "Connected";
