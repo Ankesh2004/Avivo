@@ -17,13 +17,13 @@ app.use(express.json());
 app.use(express.urlencoded({extended:true}));
 app.use(express.static("public"));
 
-const PORT = config.port || 4000;
+const PORT = config.port || 3030;
 
 // Global variables
 let workers = null;
 let router = null;
 
-async function startServer() {
+function startServer() {
     // starting a https server
     const options = {
         key: fs.readFileSync(path.join(__dirname,'/config/create-cert-key.pem')),
@@ -41,13 +41,43 @@ async function startServer() {
 
     // socketIO event listeners
     io.on('connect',(socket)=>{
-        socket.on('getRtpCap', ()=>{
+        let clientProducerTransport = null;
+
+        // Client's Device requests to get RTP Capabilities before connecting to router
+        socket.on('getRtpCap', cb=>{
             if(!router){
                 console.log("Router not ready");
                 return;
             }
-            return router.rtpCapabilities;
+            cb(router.rtpCapabilities);
         });
+
+        // create producer transport for the client (client whose socket is this)
+        socket.on('create-producer-transport',async cb=>{
+            clientProducerTransport = await router.createWebRtcTransport({
+                enableUdp:true,
+                enableTcp:true,
+                preferUdp:true,
+                listenInfos:[
+                    {
+                        protocol: 'udp',
+                        ip: '127.0.0.1'
+                    },
+                    {
+                        protocol: 'tcp',
+                        ip: '127.0.0.1'
+                    }
+                ]
+            });
+            console.log(clientProducerTransport);
+            const clientTransportParams = {
+                id: clientProducerTransport.id,
+                iceParameters: clientProducerTransport.iceParameters,
+                iceCandidates: clientProducerTransport.iceCandidates,
+                dtlsParameters: clientProducerTransport.dtlsParameters
+            }
+            cb(clientTransportParams);
+        })
     })
 }
 
@@ -62,5 +92,5 @@ async function initMediaSoup() {
     console.log("Router created with id : ",router.id);
 }
 
+await initMediaSoup();
 startServer();
-initMediaSoup();
