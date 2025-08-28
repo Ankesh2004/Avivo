@@ -1,6 +1,6 @@
 import os from 'os';
 import mediasoup from 'mediasoup';
-import { config } from "./config/config";
+import { config } from "./config/config.js";
 
 const totalThreads = os.cpus().length;
 export const createWorkers = async()=>new Promise(async(resolve,reject)=>{
