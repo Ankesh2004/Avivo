@@ -3,6 +3,7 @@ let socket = null;
 let device = null;
 let localStream = null;
 let producerTransport = null;
+let producer = null;
 // Start connection to the server
 const initConnect = ()=>{
     socket = io("https://localhost:3030");
@@ -51,20 +52,50 @@ const createProducer = async()=>{
             dtlsParameters
         });
         producerTransport = transport;
+
+        producerTransport.on('connect',async ({dtlsParameters},callback,errback)=>{
+            console.log("Producer transport connected !",dtlsParameters);
+    
+            await socket.emit('connect-transport',{dtlsParameters},(res)=>{
+                console.log(res);
+    
+                if(res==="success"){
+                    callback(); // must be called after server side transport is being connected to the router
+                }
+                else{
+                    errback();
+                }
+            });
+        })
+        producerTransport.on('produce',async(parameters,callback,errback)=>{
+            console.log('Transport producer event fired!');
+
+            const {kind,rtpParameters} = parameters;
+            await socket.emit('start-producing',{kind,rtpParameters},(res)=>{
+                console.log(res);
+
+                if(res==="error"){
+                    console.error('Something went wrong when server tried to produce the feed to the router');
+                    errback();
+                }
+                else{
+                    callback({id:res});
+
+                    publishButton.disabled = true;
+                    createConsButton.disabled = false;
+                }
+            });
+        })
+        createProdButton.disabled = true;
+        publishButton.disabled = false;
     });
-    producerTransport.on('connect',async ({dtlsParameters},callback,errback)=>{
-        console.log("Producer transport connected !");
-    })
-    producerTransport.on('produce',async(parameters,callback,errback)=>{
-        console.log('Transport producer event fired!');
-    })
-    createProdButton.disabled = true;
-    publishButton.disabled = true;
+    
 };
 
 // 3. Publish transport feed
 const publish = async()=>{
-    console.log("Publish feed!");
+    const track = localStream.getVideoTracks()[0];
+    producer = await producerTransport.produce({track});
 }
 
 // -----------------All socket event listeners-------------------------------

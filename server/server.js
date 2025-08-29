@@ -42,7 +42,7 @@ function startServer() {
     // socketIO event listeners
     io.on('connect',(socket)=>{
         let clientProducerTransport = null;
-
+        let clientProducer = null;
         // Client's Device requests to get RTP Capabilities before connecting to router
         socket.on('getRtpCap', cb=>{
             if(!router){
@@ -77,6 +77,29 @@ function startServer() {
                 dtlsParameters: clientProducerTransport.dtlsParameters
             }
             cb(clientTransportParams);
+        })
+
+        // connect server side transport to the router
+        socket.on('connect-transport',async (dtlsParameters,cb)=>{
+            try{
+                await clientProducerTransport.connect(dtlsParameters);
+                cb("success");
+            }
+            catch(error){
+                console.log(error);
+                cb("error");
+            }
+        })
+
+        // start producing
+        socket.on('start-producing',async ({kind,rtpParameters},cb)=>{
+            try{
+                clientProducer = await clientProducerTransport.produce({kind,rtpParameters});
+                cb(clientProducer.id);
+            }
+            catch(error){
+                cb("error");
+            }
         })
     })
 }
