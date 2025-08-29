@@ -43,6 +43,8 @@ function startServer() {
     io.on('connect',(socket)=>{
         let clientProducerTransport = null;
         let clientProducer = null;
+        let clientConsumerTransport = null;
+        let clientConsumer = null;
         // Client's Device requests to get RTP Capabilities before connecting to router
         socket.on('getRtpCap', cb=>{
             if(!router){
@@ -80,9 +82,19 @@ function startServer() {
         })
 
         // connect server side transport to the router
-        socket.on('connect-transport',async (dtlsParameters,cb)=>{
+        socket.on('connect-producer-transport',async (dtlsParameters,cb)=>{
             try{
                 await clientProducerTransport.connect(dtlsParameters);
+                cb("success");
+            }
+            catch(error){
+                console.log(error);
+                cb("error");
+            }
+        })
+        socket.on('connect-consumer-transport',async (dtlsParameters,cb)=>{
+            try{
+                await clientConsumerTransport.connect(dtlsParameters);
                 cb("success");
             }
             catch(error){
@@ -101,6 +113,67 @@ function startServer() {
                 cb("error");
             }
         })
+
+        // create consumer transport for the client (client whose socket is this)
+        socket.on('create-consumer-transport',async cb=>{
+            clientConsumerTransport = await router.createWebRtcTransport({
+                enableUdp:true,
+                enableTcp:true,
+                preferUdp:true,
+                listenInfos:[
+                    {
+                        protocol: 'udp',
+                        ip: '127.0.0.1'
+                    },
+                    {
+                        protocol: 'tcp',
+                        ip: '127.0.0.1'
+                    }
+                ]
+            });
+            console.log(clientConsumerTransport);
+            const clientTransportParams = {
+                id: clientConsumerTransport.id,
+                iceParameters: clientConsumerTransport.iceParameters,
+                iceCandidates: clientConsumerTransport.iceCandidates,
+                dtlsParameters: clientConsumerTransport.dtlsParameters
+            }
+            cb(clientTransportParams);
+        })
+
+        // start producing
+        socket.on('start-consuming',async({clientRtpCapabilities},cb)=>{
+            try{
+                clientConsumer = await clientConsumerTransport.consume({
+                    producerId: clientProducer.id,
+                    rtpCapabilities:clientRtpCapabilities,
+                    paused:true
+                });
+                cb({
+                    id:clientConsumer.id,
+                    producerId:clientProducer.id,
+                    kind:clientConsumer.kind,
+                    rtpParameters:clientConsumer.rtpParameters
+                });
+            }
+            catch(error){
+                cb("error");
+            }
+        })
+
+        // resume sednign RTP packets 
+        socket.on('resume-consuming', async (cb) => {
+            try {
+                await clientConsumer.resume();
+                cb();
+            } catch (error) {
+                console.error("Error resuming consumer:", error);
+                cb("error");
+            }
+        });
+
+        // TODO: Handle graceful shutdown : clearing transports
+
     })
 }
 

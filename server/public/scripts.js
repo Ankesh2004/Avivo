@@ -4,6 +4,8 @@ let device = null;
 let localStream = null;
 let producerTransport = null;
 let producer = null;
+let consumerTransport = null;
+let consumer = null;
 // Start connection to the server
 const initConnect = ()=>{
     socket = io("https://localhost:3030");
@@ -31,7 +33,7 @@ const deviceSetup = async()=>{
         }
     });
 }
-// 2. Create transport
+// 2. Create producer transport
 const createProducer = async()=>{
     try{
         localStream = await navigator.mediaDevices.getUserMedia({
@@ -56,7 +58,7 @@ const createProducer = async()=>{
         producerTransport.on('connect',async ({dtlsParameters},callback,errback)=>{
             console.log("Producer transport connected !",dtlsParameters);
     
-            await socket.emit('connect-transport',{dtlsParameters},(res)=>{
+            await socket.emit('connect-producer-transport',{dtlsParameters},(res)=>{
                 console.log(res);
     
                 if(res==="success"){
@@ -98,6 +100,73 @@ const publish = async()=>{
     producer = await producerTransport.produce({track});
 }
 
+// 4. Create consumer transport
+const createConsumer = async()=>{
+    socket.emit('create-consumer-transport',async (data)=>{
+        console.log(data);
+        const {id,iceParameters,iceCandidates,dtlsParameters} = data;
+        const transport = device.createRecvTransport({
+            id,
+            iceParameters,
+            iceCandidates,
+            dtlsParameters
+        });
+        consumerTransport = transport;
+        console.log("Cosumer transport created!")
+        consumerTransport.on('connect',async ({dtlsParameters},callback,errback)=>{
+            console.log("Consumer transport connected !",dtlsParameters);
+    
+            await socket.emit('connect-consumer-transport',{dtlsParameters},(res)=>{
+                console.log(res);
+    
+                if(res==="success"){
+                    callback(); // must be called after server side transport is being connected to the router
+                }
+                else{
+                    errback();
+                }
+            });
+        })
+        createConsButton.disabled = true;
+        consumeButton.disabled = false;
+    });
+    
+};
+
+// 5. consume the feed
+const consume = async()=>{
+    await socket.emit('start-consuming',{clientRtpCapabilities:device.rtpCapabilities},async res=>{
+        console.log(res);
+        
+        if(res==="error"){
+            console.error('Something went wrong when server tried to consume the feed from the router');
+            return;
+        }
+        const {id,producerId,kind,rtpParameters} = res;
+
+        consumer = await consumerTransport.consume({
+            id,
+            producerId,
+            kind,
+            rtpParameters
+        })
+        
+
+        await socket.emit('resume-consuming',()=>{
+            try{
+                const { track } = consumer;
+                remoteVideo.srcObject = new MediaStream([track]);
+            }catch(error){
+                console.log('Error in resuming consumer feed on client side',error);
+            }
+        })
+        // resume the tracks
+        await consumer.resume();
+
+        consumeButton.disabled = true;
+        disconnectButton.disabled = false;
+    });
+}
 // -----------------All socket event listeners-------------------------------
 function addSocketListeners(){
     socket.on("connect",()=>{
