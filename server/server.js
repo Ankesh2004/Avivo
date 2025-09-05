@@ -59,9 +59,12 @@ const PORT = config.port || 3001;
 let workers = null;
 let router = null;
 
-// peers map to store per-socket state
-// peers.set(socket.id, { producerTransport, producer, consumerTransport, consumers: Map<consumerId, consumer> })
-const peers = new Map();
+// --- Data structures for room management ---
+// rooms Map will store room-specific data, including a map of peers for each room.
+// rooms.get(roomId) -> { peers: Map<socketId, PeerState> }
+// peers:(socket.id, { producerTransport, producer, consumerTransport, consumers: Map<consumerId, consumer> })
+const rooms = new Map(); // rooms ---> {peers ---> peerStates}
+const socketToRoomMap = new Map(); // quickly get roomId of a socket
 
 function createTransportOptions() {
     return {
@@ -97,32 +100,41 @@ function startServer() {
     io.on("connect", (socket) => {
         console.log("socket connected:", socket.id);
     
-        // initialize peer state
-        peers.set(socket.id, {
-            producerTransports: new Map(), // kind -> transport
-            producers: new Map(),          // kind -> producer
-            consumerTransports: new Map(), // kind -> transport
-            consumers: new Map(),          // consumerId -> consumer
-        });
-    
-        // helper to get list of current producers (excluding this socket)
-        const getAllProducerInfos = () => {
-            const arr = [];
-            for (const [peerId, pdata] of peers.entries()) {
-                for (const [kind, producer] of pdata.producers.entries()) {
+        socket.on('join-room', ({ roomId }) => {
+            console.log(`Socket ${socket.id} joining room ${roomId}`);
+
+            // If the room doesn't exist, create it.
+            if (!rooms.has(roomId)) {
+                rooms.set(roomId, { peers: new Map() });
+            }
+            const room = rooms.get(roomId);
+
+            // Add the peer to the room.
+            room.peers.set(socket.id, {
+                producerTransports: new Map(), // kind -> transport
+                producers: new Map(),          // kind -> producer
+                consumerTransports: new Map(), // kind -> transport
+                consumers: new Map(),          // consumerId -> consumer 
+            });
+
+            socketToRoomMap.set(socket.id, roomId);
+            socket.join(roomId);
+
+            const getProducersForRoom = () => {
+                const producerList = [];
+                if (!room) return producerList;
+                for (const [peerId, peerData] of room.peers.entries()) {
                     if (peerId !== socket.id) {
-                        arr.push({
-                            producerId: producer.id,
-                            producerSocketId: peerId,
-                            kind,
-                        });
+                        for (const [kind, producer] of peerData.producers.entries()) {
+                            producerList.push({ producerId: producer.id, producerSocketId: peerId, kind });
+                        }
                     }
                 }
-            }
-            return arr;
-        };
-    
-        socket.emit("existing-producers", getAllProducerInfos());
+                return producerList;
+            };
+
+            socket.emit("existing-producers", { roomId, producers: getProducersForRoom() });
+        });
     
         socket.on("getRtpCap", (cb) => {
             if (!router) {
@@ -134,8 +146,12 @@ function startServer() {
     
         socket.on("create-producer-transport", async ({ kind }, cb) => {
             try {
+                const roomId = socketToRoomMap.get(socket.id);
+                const peerState = rooms.get(roomId)?.peers.get(socket.id);
+                if (!peerState) throw new Error("Peer state not found");
+
                 const tr = await router.createWebRtcTransport(createTransportOptions());
-                peers.get(socket.id).producerTransports.set(kind, tr);
+                peerState.producerTransports.set(kind, tr);
                 cb({
                     id: tr.id,
                     iceParameters: tr.iceParameters,
@@ -150,7 +166,10 @@ function startServer() {
     
         socket.on("connect-producer-transport", async ({ kind, dtlsParameters }, cb) => {
             try {
-                const state = peers.get(socket.id);
+                const roomId = socketToRoomMap.get(socket.id);
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+                if (!state) throw new Error("Peer state not found");
+
                 const tr = state.producerTransports.get(kind);
                 if (!tr) throw new Error(`no ${kind} producer transport`);
 
@@ -164,7 +183,10 @@ function startServer() {
     
         socket.on("start-producing", async ({ kind, rtpParameters }, cb) => {
             try {
-                const state = peers.get(socket.id);
+                const roomId = socketToRoomMap.get(socket.id);
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+                if (!state) throw new Error("Peer state not found");
+
                 const tr = state.producerTransports.get(kind);
                 if (!tr) throw new Error(`${kind} transport missing`);
     
@@ -172,18 +194,18 @@ function startServer() {
                 state.producers.set(kind, producer);
     
                 producer.on("transportclose", () => {
-                    console.log("producer transport closed, producer closing:", producer.id);
                     producer.close();
                     state.producers.delete(kind);
                 });
-                producer.on("close", () => {
-                    state.producers.delete(kind);
-                });
-    
-                socket.broadcast.emit("new-producer", {
-                    producerId: producer.id,
-                    producerSocketId: socket.id,
-                    kind: producer.kind,
+
+                //Broadcast new producer ONLY to peers in the same room.
+                socket.to(roomId).emit("new-producer", {
+                    roomId, // Include roomId in the payload
+                    producer:{
+                        producerId: producer.id,
+                        producerSocketId: socket.id,
+                        kind: producer.kind
+                    },
                 });
     
                 cb({ id: producer.id });
@@ -195,8 +217,12 @@ function startServer() {
     
         socket.on("create-consumer-transport", async ({ kind }, cb) => {
             try {
+                const roomId = socketToRoomMap.get(socket.id);
+                const peerState = rooms.get(roomId)?.peers.get(socket.id);
+                if (!peerState) throw new Error("Peer state not found");
+                
                 const tr = await router.createWebRtcTransport(createTransportOptions());
-                peers.get(socket.id).consumerTransports.set(kind, tr);
+                peerState.consumerTransports.set(kind, tr);
                 cb({
                     id: tr.id,
                     iceParameters: tr.iceParameters,
@@ -211,7 +237,10 @@ function startServer() {
     
         socket.on("connect-consumer-transport", async ({ kind, dtlsParameters }, cb) => {
             try {
-                const state = peers.get(socket.id);
+                const roomId = socketToRoomMap.get(socket.id);
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+                if (!state) throw new Error("Peer state not found");
+
                 const tr = state.consumerTransports.get(kind);
                 if (!tr) throw new Error("no consumer transport");
                 await tr.connect({dtlsParameters});
@@ -224,7 +253,10 @@ function startServer() {
     
         socket.on("start-consuming", async ({ producerId, clientRtpCapabilities, kind }, cb) => {
             try {
-                const state = peers.get(socket.id);
+                const roomId = socketToRoomMap.get(socket.id);
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+                if (!state) throw new Error("Peer state not found");
+
                 const tr = state.consumerTransports.get(kind);
                 if (!tr) return cb({ error: "no-consumer-transport" });
     
@@ -236,13 +268,9 @@ function startServer() {
     
                 state.consumers.set(consumer.id, consumer);
     
-                consumer.on("transportclose", () => {
-                    consumer.close();
-                    state.consumers.delete(consumer.id);
-                });
                 consumer.on("producerclose", () => {
                     state.consumers.delete(consumer.id);
-                    socket.emit("producer-closed", { producerId });
+                    socket.emit("producer-closed", { roomId, producerId });
                 });
     
                 cb({
@@ -259,7 +287,9 @@ function startServer() {
     
         socket.on("resume-consuming", async ({ consumerId }, cb) => {
             try {
-                const state = peers.get(socket.id);
+                const roomId = socketToRoomMap.get(socket.id);
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+
                 const consumer = state?.consumers.get(consumerId);
                 if (!consumer) return cb({ error: "no-consumer" });
                 await consumer.resume();
@@ -272,27 +302,36 @@ function startServer() {
     
         socket.on("disconnect", async () => {
             console.log("socket disconnect:", socket.id);
-            const state = peers.get(socket.id);
+
+            const roomId = socketToRoomMap.get(socket.id);
+            if (!roomId) return;
+
+            const room = rooms.get(roomId);
+            const state = room?.peers.get(socket.id);
+            
             if (state) {
-                try {
-                    for (const producer of state.producers.values()) {
-                        try { producer.close(); } catch {}
-                    }
-                    for (const tr of state.producerTransports.values()) {
-                        try { tr.close(); } catch {}
-                    }
-                    for (const consumer of state.consumers.values()) {
-                        try { consumer.close(); } catch {}
-                    }
-                    for (const tr of state.consumerTransports.values()) {
-                        try { tr.close(); } catch {}
-                    }
-                } catch (err) {
-                    console.error("error cleaning up peer:", err);
+                // Close all mediasoup objects associated with the disconnected peer.
+                for (const producer of state.producers.values()) producer.close();
+                for (const tr of state.producerTransports.values()) tr.close();
+                for (const tr of state.consumerTransports.values()) tr.close();
+
+                // Remove the peer from the room.
+                room.peers.delete(socket.id);
+
+                // Notify others in the room that the producers of this peer have closed.
+                for (const producer of state.producers.values()) {
+                    socket.to(roomId).emit("producer-closed", { roomId, producerId: producer.id });
                 }
-                peers.delete(socket.id);
-                socket.broadcast.emit("producer-closed", { producerSocketId: socket.id });
             }
+
+            // If the room is now empty, delete it to free up memory.
+            if (room && room.peers.size === 0) {
+                console.log(`Room ${roomId} is now empty, closing it.`);
+                rooms.delete(roomId);
+            }
+
+            // Clean up the socket-to-room mapping.
+            socketToRoomMap.delete(socket.id);
         });
     });
     
