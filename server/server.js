@@ -3,18 +3,55 @@ import cors from "cors";
 import { config } from "./config/config.js";
 import fs, { stat } from "node:fs";
 import https from "node:https";
+import fetch from 'node-fetch';
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createWorkers } from "./createWorker.js";
-
+import dotenv from "dotenv";
+dotenv.config({path:'../.env'});
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-
-app.use(cors());
+const apiKey = process.env.OPENAI_API_KEY;
+    
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
+app.post('/api/get-token', async (req, res) => {    
+    if (!apiKey) {
+        console.log("No diddy");
+      return res.status(500).json({ error: 'OPENAI_API_KEY is not set on the server.' });
+    }
+  
+    try {
+      const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session: {
+            type: 'realtime',
+            model: 'gpt-4o-mini-realtime-preview',
+          },
+        }),
+      });
+  
+      if (!response.ok) {
+          const errorBody = await response.text();
+          throw new Error(`OpenAI API failed with status: ${response.status}, body: ${errorBody}`);
+      }
+  
+      const data = await response.json();
+      const ephemeralKey = data.value; 
+      res.json({ token: ephemeralKey });
+    } catch (error) {
+      console.error('Error fetching ephemeral key:', error);
+      res.status(500).json({ error: 'Failed to fetch ephemeral key from OpenAI.' });
+    }
+  });
 
 const PORT = config.port || 3001;
 
