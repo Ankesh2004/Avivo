@@ -1,5 +1,5 @@
 export const config = {
-    port: 3030,
+    port: 3001,
     workerSettings: {
         rtcMinPort: 40000,
         rtcMaxPort: 41000,
