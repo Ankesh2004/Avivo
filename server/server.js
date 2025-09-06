@@ -333,6 +333,41 @@ function startServer() {
             // Clean up the socket-to-room mapping.
             socketToRoomMap.delete(socket.id);
         });
+
+        socket.on('toggle-producer-state', async ({ roomId, kind, paused }) => {
+            try {
+                const state = rooms.get(roomId)?.peers.get(socket.id);
+        
+                if (!state) {
+                    console.error(`[toggle-producer-state] Peer state not found for socket ${socket.id} in room ${roomId}`);
+                    return;
+                }
+                const producerData = state.producers.get(kind);
+                if (!producerData) {
+                    console.error(`[toggle-producer-state] Producer of kind "${kind}" not found for socket ${socket.id}`);
+                    return;
+                }
+                const { producer } = producerData;
+                if (paused) {
+                    await producer.pause();
+                } else {
+                    await producer.resume();
+                }
+                // This ensures new participants get the correct mute/video status.
+                producerData.paused = paused;
+                console.log(`Producer ${producer.id} (${kind}) for socket ${socket.id} state changed to: ${paused ? 'paused' : 'resumed'}`);
+        
+                // Broadcast the change to EVERYONE ELSE in the room. TODO: handle ui update in frontend
+                socket.to(roomId).emit('peer-producer-state-changed', {
+                    producerSocketId: socket.id,
+                    kind,                   
+                    paused           
+                });
+        
+            } catch (err) {
+                console.error('Error occurred in toggle-producer-state handler:', err);
+            }
+        });
     });
     
 }
